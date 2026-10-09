@@ -1,13 +1,62 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestRunsPageExposesAccountPushSettings(t *testing.T) {
+	t.Setenv("GIN_MODE", "test")
+	app, err := NewApp(Config{ResourceRoot: filepath.Join("..", "..", "resource")})
+	if err != nil {
+		t.Fatalf("NewApp() error = %v", err)
+	}
+	defer app.Close()
+
+	page := httptest.NewRecorder()
+	app.Handler().ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/runs?view=push", nil))
+	if page.Code != http.StatusOK {
+		t.Fatalf("GET /runs?view=push status = %d", page.Code)
+	}
+	for _, marker := range []string{"当前账号独立推送", "配置推送", "Server酱", "PushPlus", "企业微信机器人", `initialView === "push"`} {
+		if !strings.Contains(page.Body.String(), marker) {
+			t.Fatalf("push settings marker %q missing from runs page", marker)
+		}
+	}
+
+	nav := httptest.NewRecorder()
+	app.Handler().ServeHTTP(nav, httptest.NewRequest(http.MethodGet, "/static/js/platform.js", nil))
+	if nav.Code != http.StatusOK || !strings.Contains(nav.Body.String(), `["/runs?view=push", "push", "独立推送"`) {
+		t.Fatalf("platform navigation does not expose independent push settings: %d %s", nav.Code, nav.Body.String())
+	}
+	for _, marker := range []string{"platformUpdateDialog", "下载 ${runtimeInfo.label", "更新到 v${updateTarget} 并重启", `/api/maintenance${check ? "?check=1" : ""}`} {
+		if !strings.Contains(nav.Body.String(), marker) {
+			t.Fatalf("platform update marker %q missing", marker)
+		}
+	}
+}
+
+func TestHealthEndpointsRemainPublicWithAuthEnabled(t *testing.T) {
+	app, err := NewApp(Config{ResourceRoot: t.TempDir(), AdminUser: "health-test", AdminPassword: "local-test-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	for _, path := range []string{"/health", "/healthz"} {
+		response := httptest.NewRecorder()
+		app.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ok":true`) {
+			t.Fatalf("anonymous %s: %d %s", path, response.Code, response.Body.String())
+		}
+	}
+}
 
 func TestHandlerServesGinRoutesAndSwaggerDocs(t *testing.T) {
 	t.Setenv("GIN_MODE", "test")
@@ -42,6 +91,30 @@ func TestHandlerServesGinRoutesAndSwaggerDocs(t *testing.T) {
 	if healthBody.Code != 0 || healthBody.Msg != "success" || healthBody.Data["ok"] != true {
 		t.Fatalf("GET /health body = %#v", healthBody)
 	}
+	legacyHealth := httptest.NewRecorder()
+	handler.ServeHTTP(legacyHealth, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if legacyHealth.Code != http.StatusOK || legacyHealth.Body.String() != health.Body.String() {
+		t.Fatalf("legacy health endpoint differs: status=%d body=%s", legacyHealth.Code, legacyHealth.Body.String())
+	}
+
+	versionResponse := httptest.NewRecorder()
+	handler.ServeHTTP(versionResponse, httptest.NewRequest(http.MethodGet, "/api/version", nil))
+	if versionResponse.Code != http.StatusOK {
+		t.Fatalf("GET /api/version status = %d", versionResponse.Code)
+	}
+	var versionBody struct {
+		Code int `json:"code"`
+		Data struct {
+			Version string `json:"version"`
+			Commit  string `json:"commit"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(versionResponse.Body.Bytes(), &versionBody); err != nil {
+		t.Fatalf("decode version JSON: %v", err)
+	}
+	if versionBody.Code != 0 || versionBody.Data.Version == "" || versionBody.Data.Commit == "" {
+		t.Fatalf("GET /api/version body = %#v", versionBody)
+	}
 
 	openapi := httptest.NewRecorder()
 	handler.ServeHTTP(openapi, httptest.NewRequest(http.MethodGet, "/openapi.json", nil))
@@ -58,11 +131,19 @@ func TestHandlerServesGinRoutesAndSwaggerDocs(t *testing.T) {
 	if _, ok := spec["code"]; ok {
 		t.Fatalf("OpenAPI JSON should not be wrapped in API envelope")
 	}
+	components := spec["components"].(map[string]any)
+	schemas := components["schemas"].(map[string]any)
+	wxappResponse := schemas["WxappResponse"].(map[string]any)
+	wxappProperties := wxappResponse["properties"].(map[string]any)
+	accountRef := wxappProperties["account"].(map[string]any)["$ref"]
+	if accountRef != "#/components/schemas/WxappAccountLabel" {
+		t.Fatalf("OpenAPI WxappResponse account schema = %v", accountRef)
+	}
 	paths, ok := spec["paths"].(map[string]any)
 	if !ok {
 		t.Fatalf("OpenAPI paths missing or invalid")
 	}
-	for _, path := range []string{"/quick-login", "/quick-login/{session_id}/confirm", "/wx/code", "/wx/getuserinfo", "/wx/encryptkey", "/wx/getphonenumber", "/wx/cloud", "/wx/qrcodeauth", "/wx/mpgeta8key", "/wx/appmsgext", "/wx/appmsglike", "/wxapp/getCode", "/wxapp/getPhoneNumber", "/wxapp/operateWxData", "/accounts/avatar", "/accounts/remark", "/accounts/proxy", "/accounts/proxy/test", "/api/qinglong/config", "/api/qinglong/sync", "/api/qinglong/jobs", "/api/qinglong/push"} {
+	for _, path := range []string{"/quick-login", "/quick-login/{session_id}/confirm", "/account-link/{token}", "/account-link/{token}/qr", "/account-link/{token}/qr/{session_id}/poll", "/account-link/{token}/qr/{session_id}/confirm", "/api/account-links", "/qr/{session_id}/cancel", "/wx/code", "/wx/getuserinfo", "/wx/encryptkey", "/wx/getlatestuserkey", "/wx/getphonenumber", "/wx/cloud", "/wx/qrcodeauth", "/wx/mpgeta8key", "/wx/appmsgext", "/wx/appmsglike", "/wxapp/getCode", "/wxapp/getPhoneNumber", "/wxapp/operateWxData", "/accounts/repair", "/accounts/avatar", "/accounts/remark", "/accounts/proxy", "/accounts/proxy/test", "/api/proxy-profiles", "/api/proxy-profiles/{id}", "/api/proxy-profiles/areas/provinces", "/api/proxy-profiles/areas/cities", "/api/proxy-location/recommend", "/api/qinglong/config", "/api/qinglong/sync", "/api/qinglong/jobs", "/api/qinglong/push"} {
 		if _, ok := paths[path]; !ok {
 			t.Fatalf("OpenAPI path %s missing", path)
 		}
@@ -139,7 +220,7 @@ func TestHandlerServesGinRoutesAndSwaggerDocs(t *testing.T) {
 	if oldPath.Code != http.StatusNotFound {
 		t.Fatalf("POST old account feature route status = %d", oldPath.Code)
 	}
-	for _, path := range []string{"/wx/code", "/wx/encryptkey", "/wx/getphonenumber", "/wx/cloud", "/wx/mpgeta8key", "/wx/appmsgext", "/wx/appmsglike", "/wx/qrcodeauth"} {
+	for _, path := range []string{"/wx/code", "/wx/encryptkey", "/wx/getlatestuserkey", "/wx/getphonenumber", "/wx/cloud", "/wx/mpgeta8key", "/wx/appmsgext", "/wx/appmsglike", "/wx/qrcodeauth"} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
 		if recorder.Code != http.StatusMethodNotAllowed {
@@ -157,6 +238,31 @@ func TestHandlerServesGinRoutesAndSwaggerDocs(t *testing.T) {
 	handler.ServeHTTP(userinfo, httptest.NewRequest(http.MethodGet, "/wx/getuserinfo", nil))
 	if userinfo.Code != http.StatusBadRequest {
 		t.Fatalf("GET /wx/getuserinfo without ref status = %d, want %d", userinfo.Code, http.StatusBadRequest)
+	}
+}
+
+func TestNormalizeEncryptKeyPayload(t *testing.T) {
+	tests := []struct {
+		name string
+		in   map[string]any
+		want string
+	}{
+		{name: "top level client name", in: map[string]any{"api_name": "getLatestUserKey", "data": map[string]any{"appid": "wx-test"}}, want: encryptKeyOperation},
+		{name: "nested client name", in: map[string]any{"data": map[string]any{"api_name": "getLatestUserKey", "version": 2}}, want: encryptKeyOperation},
+		{name: "legacy server name", in: map[string]any{"api_name": "getUserEncryptKey"}, want: encryptKeyOperation},
+		{name: "server name unchanged", in: map[string]any{"api_name": encryptKeyOperation}, want: encryptKeyOperation},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeEncryptKeyPayload(tt.in)
+			if got["api_name"] == tt.want {
+				return
+			}
+			if nested, ok := got["data"].(map[string]any); ok && nested["api_name"] == tt.want {
+				return
+			}
+			t.Fatalf("normalized payload = %#v, want api_name %q", got, tt.want)
+		})
 	}
 }
 
@@ -256,5 +362,164 @@ func TestSQLiteAuthFirstRegistrationAndUnauthorizedAPI(t *testing.T) {
 	handler.ServeHTTP(index, indexRequest)
 	if index.Code != http.StatusOK {
 		t.Fatalf("authenticated GET / status = %d", index.Code)
+	}
+}
+
+func TestSQLite普通用户CanUsePlatformPages(t *testing.T) {
+	t.Setenv("GIN_MODE", "test")
+	app, err := NewApp(Config{ResourceRoot: t.TempDir(), AuthDriver: "sqlite"})
+	if err != nil {
+		t.Fatalf("NewApp() error = %v", err)
+	}
+	defer app.Close()
+	handler := app.Handler()
+
+	register := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(`{"username":"admin","displayName":"Admin","password":"admin-password"}`))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(register, req)
+	if register.Code != http.StatusCreated {
+		t.Fatalf("register admin status = %d", register.Code)
+	}
+	adminCookie := register.Result().Cookies()[0]
+
+	create := httptest.NewRecorder()
+	createReq := httptest.NewRequest(http.MethodPost, "/api/auth/users", strings.NewReader(`{"username":"member","display_name":"Member","password":"member-password","role":"user"}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createReq.AddCookie(adminCookie)
+	handler.ServeHTTP(create, createReq)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create user status = %d body=%s", create.Code, create.Body.String())
+	}
+
+	login := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(`{"username":"member","password":"member-password"}`))
+	loginReq.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(login, loginReq)
+	if login.Code != http.StatusOK {
+		t.Fatalf("login member status = %d", login.Code)
+	}
+	memberCookie := login.Result().Cookies()[0]
+	for _, path := range []string{"/", "/scan", "/proxies", "/runs", "/accounts", "/settings"} {
+		page := httptest.NewRecorder()
+		pageReq := httptest.NewRequest(http.MethodGet, path, nil)
+		pageReq.AddCookie(memberCookie)
+		handler.ServeHTTP(page, pageReq)
+		if page.Code != http.StatusOK {
+			t.Fatalf("普通用户 GET %s status = %d body=%s", path, page.Code, page.Body.String())
+		}
+	}
+	users := httptest.NewRecorder()
+	usersReq := httptest.NewRequest(http.MethodGet, "/users", nil)
+	usersReq.AddCookie(memberCookie)
+	handler.ServeHTTP(users, usersReq)
+	if users.Code != http.StatusForbidden {
+		t.Fatalf("普通用户 GET /users status = %d, want %d", users.Code, http.StatusForbidden)
+	}
+}
+
+func TestSQLite普通用户账号隔离AndAdminCanInspectOwnership(t *testing.T) {
+	t.Setenv("GIN_MODE", "test")
+	app, err := NewApp(Config{ResourceRoot: t.TempDir(), AuthDriver: "sqlite"})
+	if err != nil {
+		t.Fatalf("NewApp() error = %v", err)
+	}
+	defer app.Close()
+	handler := app.Handler()
+
+	adminRegister := httptest.NewRecorder()
+	adminRequest := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(`{"username":"admin","displayName":"Admin","password":"admin-password"}`))
+	adminRequest.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(adminRegister, adminRequest)
+	adminCookie := adminRegister.Result().Cookies()[0]
+
+	create := httptest.NewRecorder()
+	createRequest := httptest.NewRequest(http.MethodPost, "/api/auth/users", strings.NewReader(`{"username":"member","display_name":"Member","password":"member-password","role":"user"}`))
+	createRequest.Header.Set("Content-Type", "application/json")
+	createRequest.AddCookie(adminCookie)
+	handler.ServeHTTP(create, createRequest)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create user status = %d body=%s", create.Code, create.Body.String())
+	}
+	users, err := app.auth.ListUsers(context.Background())
+	if err != nil {
+		t.Fatalf("ListUsers() error = %v", err)
+	}
+	var memberID int64
+	for _, user := range users {
+		if user.Username == "member" {
+			memberID = user.ID
+		}
+	}
+	if memberID == 0 {
+		t.Fatal("member user not found")
+	}
+	status := "alive"
+	account, err := app.db.UpsertAccount(context.Background(), "member-openid", "buffer", nil, nil, nil, nil, nil, &status)
+	if err != nil {
+		t.Fatalf("UpsertAccount() error = %v", err)
+	}
+	if err := app.auth.ClaimAccount(context.Background(), account.ID, memberID); err != nil {
+		t.Fatalf("ClaimAccount() error = %v", err)
+	}
+
+	login := httptest.NewRecorder()
+	loginRequest := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(`{"username":"member","password":"member-password"}`))
+	loginRequest.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(login, loginRequest)
+	memberCookie := login.Result().Cookies()[0]
+
+	accounts := httptest.NewRecorder()
+	accountsRequest := httptest.NewRequest(http.MethodGet, "/accounts", nil)
+	accountsRequest.AddCookie(memberCookie)
+	handler.ServeHTTP(accounts, accountsRequest)
+	if accounts.Code != http.StatusOK || !strings.Contains(accounts.Body.String(), "member-openid") {
+		t.Fatalf("member accounts = %d %s", accounts.Code, accounts.Body.String())
+	}
+
+	inspect := httptest.NewRecorder()
+	inspectRequest := httptest.NewRequest(http.MethodGet, "/api/auth/users/"+strconv.FormatInt(memberID, 10)+"/accounts", nil)
+	inspectRequest.AddCookie(adminCookie)
+	handler.ServeHTTP(inspect, inspectRequest)
+	if inspect.Code != http.StatusOK || !strings.Contains(inspect.Body.String(), "member-openid") {
+		t.Fatalf("admin account inspect = %d %s", inspect.Code, inspect.Body.String())
+	}
+
+	blocked := httptest.NewRecorder()
+	blockedRequest := httptest.NewRequest(http.MethodGet, "/api/auth/users", nil)
+	blockedRequest.AddCookie(memberCookie)
+	handler.ServeHTTP(blocked, blockedRequest)
+	if blocked.Code != http.StatusForbidden {
+		t.Fatalf("member user list status = %d", blocked.Code)
+	}
+
+	config := httptest.NewRecorder()
+	configRequest := httptest.NewRequest(http.MethodGet, "/api/qinglong/config", nil)
+	configRequest.AddCookie(memberCookie)
+	handler.ServeHTTP(config, configRequest)
+	if config.Code != http.StatusOK || !strings.Contains(config.Body.String(), `"restricted":true`) || strings.Contains(config.Body.String(), `"client_id"`) {
+		t.Fatalf("member panel config = %d %s", config.Code, config.Body.String())
+	}
+
+	foreign, err := app.db.UpsertAccount(context.Background(), "foreign-openid", "buffer", nil, nil, nil, nil, nil, &status)
+	if err != nil {
+		t.Fatalf("seed foreign account: %v", err)
+	}
+	for _, testRequest := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodGet, path: "/api/qinglong/jobs?ref=" + strconv.FormatInt(foreign.ID, 10)},
+		{method: http.MethodPost, path: "/accounts/refresh", body: `{"ref":"` + strconv.FormatInt(foreign.ID, 10) + `"}`},
+	} {
+		blocked := httptest.NewRecorder()
+		req := httptest.NewRequest(testRequest.method, testRequest.path, strings.NewReader(testRequest.body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(memberCookie)
+		handler.ServeHTTP(blocked, req)
+		if blocked.Code != http.StatusNotFound {
+			t.Fatalf("member foreign account request %s %s status = %d body=%s", testRequest.method, testRequest.path, blocked.Code, blocked.Body.String())
+		}
 	}
 }

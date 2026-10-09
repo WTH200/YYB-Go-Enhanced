@@ -2,11 +2,14 @@ package httpapi
 
 import (
 	"context"
+	"strings"
+	"time"
 )
 
 const (
 	PanelTypeQingLong = "qinglong"
 	PanelTypeDaidai   = "daidai"
+	PanelTypeArcadia  = "arcadia"
 )
 
 type qingLongEnv struct {
@@ -36,6 +39,7 @@ type qingLongCron struct {
 	LogPath            string  `json:"log_path"`
 	Status             any     `json:"status"`
 	LastExecutionTime  any     `json:"last_execution_time"`
+	LastRunAt          string  `json:"last_run_at"`
 	LastRunningTime    any     `json:"last_running_time"`
 	IsDisabled         *int    `json:"isDisabled"`
 	Enabled            *bool   `json:"enabled"`
@@ -73,6 +77,9 @@ func (c qingLongCron) enabled() bool {
 }
 
 func (c qingLongCron) running() bool {
+	if status, ok := c.Status.(string); ok {
+		return status == "running"
+	}
 	if c.IsDisabled != nil {
 		switch v := c.Status.(type) {
 		case float64:
@@ -104,6 +111,9 @@ func (c qingLongCron) running() bool {
 }
 
 func (c qingLongCron) getLastExecutionAt() int64 {
+	if parsed, err := time.Parse(time.RFC3339Nano, c.LastRunAt); err == nil {
+		return parsed.Unix()
+	}
 	switch v := c.LastExecutionTime.(type) {
 	case int64:
 		return v
@@ -111,6 +121,10 @@ func (c qingLongCron) getLastExecutionAt() int64 {
 		return int64(v)
 	case int:
 		return int64(v)
+	case string:
+		if parsed, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			return parsed.Unix()
+		}
 	}
 	return 0
 }
@@ -159,8 +173,12 @@ type PanelDriver interface {
 }
 
 func normalizePanelType(pType string) string {
-	if pType == PanelTypeDaidai {
+	switch strings.ToLower(strings.TrimSpace(pType)) {
+	case PanelTypeDaidai:
 		return PanelTypeDaidai
+	case PanelTypeArcadia:
+		return PanelTypeArcadia
+	default:
+		return PanelTypeQingLong
 	}
-	return PanelTypeQingLong
 }

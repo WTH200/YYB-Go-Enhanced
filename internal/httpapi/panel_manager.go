@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -39,10 +40,14 @@ func newPanelManager(panelType, baseURL, clientID, clientSecret string, timeout 
 }
 
 func (p *panelManager) createDriver(pType, baseURL, clientID, secret string) PanelDriver {
-	if normalizePanelType(pType) == PanelTypeDaidai {
+	switch normalizePanelType(pType) {
+	case PanelTypeDaidai:
 		return newDaidaiDriver(baseURL, clientID, secret, p.timeout)
+	case PanelTypeArcadia:
+		return newArcadiaDriver(baseURL, secret, p.timeout)
+	default:
+		return newQingLongDriver(baseURL, clientID, secret, p.timeout)
 	}
-	return newQingLongDriver(baseURL, clientID, secret, p.timeout)
 }
 
 func (p *panelManager) configured() bool {
@@ -106,7 +111,7 @@ func (p *panelManager) status(ctx context.Context) error {
 	if err == nil {
 		return nil
 	}
-	if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "405") {
+	if driver.PanelType() != PanelTypeArcadia && (strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "405")) {
 		altType := PanelTypeQingLong
 		if driver.PanelType() == PanelTypeQingLong {
 			altType = PanelTypeDaidai
@@ -156,6 +161,19 @@ func (p *panelManager) UpdateEnvEntry(ctx context.Context, env qingLongEnv, newV
 
 func (p *panelManager) updateEnvEntry(ctx context.Context, env qingLongEnv, newValue string) error {
 	return p.getDriver().UpdateEnvEntry(ctx, env, newValue)
+}
+
+// deleteEnvEntries is optional because older panel APIs do not expose an
+// environment delete endpoint. Callers can fall back to preserving the
+// non-empty entry when the active driver does not implement it.
+func (p *panelManager) deleteEnvEntries(ctx context.Context, ids []int64) error {
+	deleter, ok := p.getDriver().(interface {
+		DeleteEnvs(context.Context, []int64) error
+	})
+	if !ok {
+		return fmt.Errorf("当前面板不支持删除环境变量")
+	}
+	return deleter.DeleteEnvs(ctx, ids)
 }
 
 func (p *panelManager) SetEnvsEnabled(ctx context.Context, ids []int64, enabled bool) error {

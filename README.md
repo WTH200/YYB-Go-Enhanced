@@ -1,51 +1,82 @@
 # YYB Go Enhanced
 
-主要功能变化请查看 [更新日志](CHANGELOG.md)。
+[![给项目点个 Star](https://img.shields.io/github/stars/525815266/YYB-Go-Enhanced?style=social&label=Star)](https://github.com/525815266/YYB-Go-Enhanced)
+[![Release](https://img.shields.io/github/v/release/525815266/YYB-Go-Enhanced?display_name=tag)](https://github.com/525815266/YYB-Go-Enhanced/releases)
+[![Docker](https://github.com/525815266/YYB-Go-Enhanced/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/525815266/YYB-Go-Enhanced/actions/workflows/docker-publish.yml)
+[![Go Release](https://github.com/525815266/YYB-Go-Enhanced/actions/workflows/release.yml/badge.svg)](https://github.com/525815266/YYB-Go-Enhanced/actions/workflows/release.yml)
 
-应用宝协议服务增强版，提供微信扫码登录、账号与 OpenID 管理、`wx.login` code 获取、凭据按需续期、带用户权限的 Web 控制台，以及 Docker 和面板接入。
+如果你喜欢这个项目，欢迎点击仓库右上角的 ⭐ **Star**，支持持续更新！
 
-## 功能
+面向自托管环境的应用宝协议服务与微信账号管理平台。提供微信扫码登录、账号与 OpenID 管理、`wx.login` code 获取、凭据续期、账号独立代理，以及青龙、呆呆和 Arcadia 面板接入。
 
-- 支持本机微信快速授权和手机扫码添加账号，授权成功后显示账号 ID、OpenID 和存活状态
-- 扫码成功后可填写账号备注，并一键合并到面板 `YYB_SERVER`，重复操作不会产生重复账号
-- Web 控制台支持配置 **青龙面板** 与 **呆呆面板 (daidai-panel)** OpenAPI，支持自动识别与测试连接，且不会回传 Secret 明文
-- Web 控制台管理账号并复制 OpenID
-- 每个微信账号可独立选择直连、静态代理或动态代理 API，支持 HTTP CONNECT、SOCKS5、代理认证以及 `txt`、`json`、`json2` 响应
-- 提供 `/wx/*` 和 `/wxapp/*` 两套兼容接口：小程序 code、用户信息、手机号、加密 Key、云函数、二维码授权、文章会话/扩展数据/点赞
-- 应用宝短期凭据接近失效时由后台任务主动续期，业务调用失败时也会按需续期
-- SQLite 持久化账号与协议会话
-- 独立登录与注册页面，支持管理员、普通用户、用户启停、密码重置和会话管理
-- 统一管理平台外壳：固定侧栏、页面顶栏、用户身份区和移动端抽屉导航，账号、运行、用户与设置不再是相互独立的页面
-- 用户、角色和网页登录会话默认存储在 SQLite，也可切换到 MySQL；微信协议数据继续使用独立 SQLite
-- 支持与青龙容器共享 Docker 网络
-- 账号运行管理：每个微信账号独立创建、启停和运行青龙脚本，并查看日志
-- 运行日志使用独立抽屉连续刷新，保持阅读位置；支持超过 2 MB 的青龙日志索引响应
-- 账号独立推送：支持 Server酱、PushPlus 和企业微信机器人，密钥只保存在青龙环境变量
+[在线演示](https://525815266.github.io/YYB-Go-Enhanced/) · [备用演示](https://raw.githack.com/525815266/YYB-Go-Enhanced/main/docs/demo/index.html) · [版本发布](https://github.com/525815266/YYB-Go-Enhanced/releases) · [更新日志](CHANGELOG.md) · [脚本目录](scripts/README.md) · [问题反馈](https://github.com/525815266/YYB-Go-Enhanced/issues)
 
-## 界面
+> 在线演示使用虚构账号和数据，可体验账号切换、扫码、代理、运行日志与接口调试，不连接真实 YYB 服务，也不会保存输入。
 
-![账号控制台与青龙连接设置](docs/images/account-console.png)
+## 界面预览
+
+![账号工作台：搜索、状态筛选与有效期（全部为虚构演示数据）](docs/images/console-demo-1440.png)
+
+工作台支持昵称、备注、ID、OpenID 搜索和状态筛选。v0.2.22 使用紧凑卡片网格，电脑端可在卡片内直接更新扫码、管理代理；手机以单列卡片展示，选中账号后在其下方显示快捷操作。点击“待确认”可确认账号状态，新增账号和新增链接位于顶部。账号区随数量自然展开，已失效账号停止展示有效期倒计时。页面预览使用虚构账号。
 
 <p align="center">
-  <img src="docs/images/scan-sync-mobile.png" alt="扫码成功后一键添加到青龙" width="360">
-  <img src="docs/images/account-runs-mobile.png" alt="带账号备注的运行日志" width="360">
+  <img src="docs/images/scan-sync-mobile.png" alt="扫码成功后一键添加到青龙" width="32%">
+  <img src="docs/images/account-runs-mobile.png" alt="账号运行管理" width="32%">
+  <img src="docs/images/console-demo-390.png" alt="新版手机工作台（虚构数据）" width="32%">
 </p>
 
-## Docker Compose 部署
+## 核心能力
 
-运行环境需要 Docker、Docker Compose，以及名为 `qinglong_default` 的 Docker 网络。如果没有青龙，也可以先创建同名网络：
+| 分类 | 能力 |
+| --- | --- |
+| 账号管理 | 手机扫码添加账号、重复扫码更新、账号备注、OpenID 查看、状态刷新、账号整理与安全删除 |
+| 工作台 | 账号搜索、状态筛选、凭据与扫码有效期、失效状态提示，支持桌面和手机 |
+| 用户系统 | 独立登录与注册、管理员与普通用户权限、用户启停、密码重置、会话管理 |
+| 协议接口 | `/wx/*` 与 `/wxapp/*` 兼容接口、小程序 code、用户信息、手机号、云函数与协议调试 |
+| 面板联动 | 青龙、呆呆、Arcadia OpenAPI；同步 `YYB_SERVER`；按账号创建、启停、运行任务并读取隔离日志 |
+| 代理与保活 | 每账号独立直连、静态代理、动态代理 API、品赞与巨量配置；凭据按需和后台续期 |
+| 脚本管理 | 统一收录审核后的 YYB 多账号脚本；支持整库同步、单脚本拉取、拉取并创建任务 |
+| 部署维护 | Docker Compose、Android ARM64 Magisk、跨平台内嵌资源二进制；按运行平台提供更新入口 |
+
+## 部署选择
+
+| 方式 | 适用场景 | 入口 |
+| --- | --- | --- |
+| Docker Compose | NAS、服务器、与青龙同机或同网络运行 | [快速开始](#docker-compose-快速开始) |
+| Magisk | Android ARM64 设备常驻运行，不依赖 Termux | [Magisk 文档](docs/magisk.md) |
+| 原生二进制 | Linux、Windows、macOS 独立运行 | [Releases](https://github.com/525815266/YYB-Go-Enhanced/releases) |
+
+原生程序 v0.2.25 起支持自动读取程序旁的 `.env`，也可通过 `-env-file` 指定配置；Windows 不再需要逐项设置系统环境变量。具体用法见[配置方式](docs/configuration.md#配置方式)。
+
+## Docker Compose 快速开始
+
+环境需要 Docker、Docker Compose v2，以及供面板互通的用户自建网络。默认拉取官方 `linux/amd64` / `linux/arm64` 镜像，Armbian 盒子无需在本机编译。以下是**首次安装**步骤：
 
 ```bash
-docker network create qinglong_default
-```
+git clone https://github.com/525815266/YYB-Go-Enhanced.git
+cd YYB-Go-Enhanced
 
-创建本地配置：
+docker network inspect qinglong_default >/dev/null 2>&1 || \
+  docker network create qinglong_default
 
-```bash
 cp .env.example .env
+docker compose pull yyb-go
+
+# 初始化映射目录，使容器的非 root 用户能够写入数据库、头像和二维码
+mkdir -p data/db data/avatars data/qr
+docker run --rm --user 0 --entrypoint sh \
+  -v "$PWD/data:/data" ghcr.io/525815266/yyb-go-enhanced:latest \
+  -c 'chown -R yyb:yyb /data/db /data/avatars /data/qr && chmod -R u+rwX /data/db /data/avatars /data/qr'
+docker compose up -d --no-build
 ```
 
-公开版本默认使用 SQLite，无需单独部署数据库。编辑 `.env` 时保留：
+打开 `http://服务器IP:8000`。未预设管理员时，第一个注册用户自动成为管理员。
+
+青龙也需要加入同一个用户自建网络；容器叫 `qinglong` 不代表网络也叫这个名字。若青龙目前只有 Docker 默认的 `bridge` 网络，可执行 `docker network connect qinglong_default qinglong`（最后一项替换为实际容器名）。已有其他网络时，在 `.env` 设置 `YYB_DOCKER_NETWORK=实际网络名`。青龙重建时还需在其 Compose 中保留该网络，详见 [Armbian / Docker 部署排错](docs/docker-deployment.md)。
+
+后续更新使用 `docker compose pull yyb-go && docker compose up -d --no-build`；保留原 `.env` 和 `data`。开发者仍可选择 `docker compose up -d --build` 源码构建，构建测试保持启用。
+
+默认使用 SQLite，无需额外数据库：
 
 ```dotenv
 YYB_AUTH_DRIVER=sqlite
@@ -53,167 +84,63 @@ YYB_AUTH_DSN=
 YYB_COOKIE_SECURE=false
 ```
 
-认证数据库默认保存为持久化卷中的 `resource/db/auth.db`。首次打开控制台注册的第一个账号会自动成为管理员，后续注册账号为普通用户。也可以在首次启动前设置 `YYB_ADMIN_USER` 和 `YYB_ADMIN_PASSWORD` 来预先创建管理员。
+需要复用 MySQL、预设管理员、启用 HTTPS Cookie 或配置协议令牌时，参阅 [配置与账号安全](docs/configuration.md)。
 
-构建并启动：
+## 连接自动化面板
+
+可以在 Web 控制台填写连接信息，也可以编辑 `.env`。青龙最小配置如下：
+
+```dotenv
+PANEL_TYPE=qinglong
+QL_URL=http://qinglong:5700
+QL_CLIENT_ID=你的 Client ID
+QL_CLIENT_SECRET=你的 Client Secret
+YYB_QINGLONG_SERVER=yyb-go:8000
+YYB_QINGLONG_REPO=525815266_YYB-Go-Enhanced_main/scripts
+```
+
+连接后可在扫码完成页将账号合并到 `YYB_SERVER`，并在“账号运行管理”中为每个账号独立创建任务、设置推送、执行脚本和查看日志。
+
+呆呆、Arcadia、跨服务器地址、任务路径和常见登录页问题参阅 [面板接入与排错](docs/panel-integration.md)。
+
+## 脚本拉取与任务创建
+
+先在青龙容器内安装管理工具：
 
 ```bash
-docker compose up -d --build
+curl -fsSL https://raw.githubusercontent.com/525815266/YYB-Go-Enhanced/main/tools/yyb-scriptctl.sh \
+  -o /ql/data/scripts/yyb-scriptctl.sh
+chmod +x /ql/data/scripts/yyb-scriptctl.sh
 ```
 
-默认 Compose 只启动一个 `yyb-go` 容器，访问地址为 `http://服务器IP:8000`。Nginx Basic Auth 已由应用内登录页面替代；需要 HTTPS 或公网入口时，请在项目外使用已有反向代理并限制协议接口访问。
+三种操作互不混淆：
 
-需要复用 MySQL 时，设置以下变量并确保 `yyb-go` 与 MySQL 容器位于同一 Docker 网络：
+```bash
+# 同步整个 scripts/ 目录，不创建任务
+bash /ql/data/scripts/yyb-scriptctl.sh sync
 
-```dotenv
-YYB_AUTH_DRIVER=mysql
-YYB_AUTH_DSN=yyb_go:数据库密码@tcp(mysql:3306)/yyb_go?charset=utf8mb4&parseTime=true&loc=UTC
+# 只拉取一个脚本，不创建任务
+bash /ql/data/scripts/yyb-scriptctl.sh pull 麦富迪_code版.py
+
+# 拉取脚本，并创建或更新对应任务
+bash /ql/data/scripts/yyb-scriptctl.sh install 麦富迪_code版.py \
+  --cron "13 1 * * *" --name "麦富迪"
 ```
 
-旧变量 `YYB_AUTH_MYSQL_DSN` 继续兼容：只设置该变量时会自动选择 MySQL，不会迁移或覆盖已有用户。`YYB_AUTH_DRIVER=none` 可关闭网页登录认证，仅建议用于受保护的本机调试。`YYB_COOKIE_SECURE` 仅在 HTTPS 反代下设为 `true`。
+脚本来源、目录覆盖、任务去重和 Issue #66 的任务名修复说明见 [脚本管理文档](scripts/README.md#青龙脚本拉取工具)。
 
-## Magisk 模块
+手动上传的脚本不出现在“全部脚本”中？列表读取已配置目录内的**面板任务**，不是文件浏览器。请按[独立上传脚本接入步骤](docs/panel-integration.md#独立上传的脚本不在全部脚本里issue-73)配置目录、创建任务，再刷新列表。
 
-Android ARM64 设备可安装 [Magisk v0.1.4](https://github.com/525815266/YYB-Go-Enhanced/releases/tag/magisk-v0.1.4)。模块由 `late_start service` 开机常驻运行，不依赖 Termux；默认控制台为 `http://127.0.0.1:8000`，账号和配置持久化在 `/data/adb/yyb-go`。v0.1.4 已通过官方 Magisk 真机安装、进入控制台和扫码验证。
+## 调用协议接口
 
-模块目前只提供 ARM64 构建，不支持 32 位 Android。需要让青龙或呆呆面板访问手机服务时，必须在 `/data/adb/yyb-go/config.conf` 中配置局域网监听和面板地址；不要把端口暴露到公网。完整安装、升级、DNS 和局域网配置见 [Magisk 模块文档](docs/magisk.md)。
-
-### 用户与权限
-
-- 第一个管理员可由 `YYB_ADMIN_USER`、`YYB_ADMIN_PASSWORD` 初始化；未设置时首个注册账号成为管理员。
-- 后续注册账号默认为普通用户，只能进入个人设置、修改密码和管理自己的会话。
-- 管理员可访问微信账号、扫码、协议调试、面板运行管理和用户管理，并可关闭公开注册。
-- `/wx/*`、`/wxapp/*` 保持给青龙脚本调用，不要求浏览器 Cookie；不要直接将这些协议接口暴露到公网。
-- 修改密码会注销该用户的其他会话；管理员重置密码或停用用户会注销该用户全部会话。
-
-### GitHub Actions 自动与手动构建镜像
-
-项目已添加自动与手动构建 Docker 镜像的 Workflow (`.github/workflows/docker-publish.yml`)，支持打包发布到 **GitHub Container Registry (GHCR)**：
-
-- **手动触发构建**：在 GitHub 仓库页面进入 **Actions** -> 选择 **Build and Publish Docker Image** Workflow -> 点击 **Run workflow**，可自定义填入镜像 Tag（默认 `latest`）并一键构建发布。
-- **自动触发构建**：当推送分支到 `main` 或推送版本 Tag (如 `v1.0.0`) 时自动触发镜像构建。
-- **支持架构**：多架构支持 (`linux/amd64`, `linux/arm64`)。
-
-## 本机微信快速授权
-
-在 Windows 电脑上打开 YYB Go 的“添加微信账号”页面时，页面会尝试连接当前电脑已登录的微信客户端。检测成功后，点击“使用本机微信授权”，在电脑微信中确认即可；不需要用手机扫描二维码。
-
-该能力复用了微信开放平台网页授权的 `fast_login` 流程。浏览器只与本机微信通信，并把微信返回的一次性回调地址交给 YYB Go；账号凭据仍由 YYB Go 服务端换取和保存。服务端会校验回调协议、域名、路径和 `state`，且快速授权会话只能使用一次。
-
-使用条件与限制：
-
-- 仅桌面微信客户端支持，本机微信需保持登录且未锁定。
-- 浏览器必须允许访问 `https://localhost.weixin.qq.com`。企业安全策略、浏览器本地网络访问限制或微信版本不支持时，检测会失败。
-- 检测失败会自动切换到原有扫码授权，不影响手机扫码登录。
-- 快速授权最终仍需要用户在微信中确认，不能在无交互的情况下静默登录。
-
-如果只允许某个局域网地址监听，可设置：
-
-```dotenv
-YYB_BIND_ADDRESS=192.168.1.10
-```
-
-## 账号独立代理
-
-左侧“代理设置”集中管理每个微信账号的独立出口，工作台会显示当前账号的代理摘要；添加账号页面也可先设置登录代理，再生成二维码或发起本机微信授权。登录二维码、OAuth 回调、凭据刷新、用户资料、`wx.login`、LongLink 和 ShortLink 会使用该账号的同一代理策略。
-
-支持以下配置：
-
-- **直连**：该账号不使用代理；即使启动参数设置了全局 `-tcp-proxy`，账号显式选择直连后也会覆盖全局值。
-- **静态代理**：填写 `host:port`、`user:pass@host:port`、`host:port:user:pass` 或 `host:port|user|pass`。
-- **动态代理 API**：填写完整的 HTTP/HTTPS 提取地址，省、市和运营商参数直接保留在 URL 查询参数中。响应可为纯文本，或 `json` / `json2`；解析器支持常见的 `data`、`result`、`list`、`proxy_list`、`rows`、`items` 等嵌套结构，以及独立的 IP、端口、用户名和密码字段。
-- **代理协议**：HTTP 代理使用 CONNECT 隧道，也可选择 SOCKS5；两者均支持用户名密码认证。
-
-动态 API 在每次需要建立或刷新高层会话时提取一个代理，同一次调用不会重复提取。账号显式配置的代理若不可用，请求会直接失败，不会静默切换为直连，避免异地出口导致账号掉线。原有 Magisk `TCP_PROXY` / 服务端 `-tcp-proxy` 仅作为没有账号配置时的兼容默认值。
-
-代理 API URL 和静态代理认证信息保存在本机协议 SQLite 数据库中。不要把数据库、管理接口或包含密钥的代理 URL 暴露到公网。
-
-## 自动保活
-
-服务默认每 30 分钟检查一次账号，并在 access token 剩余不足 45 分钟时，通过 refresh token 更新 access token、refresh token 和 login buffer。该过程不会生成未消费的 `wx.login` code。
-
-微信服务端可能只更新 access token 而不轮换 refresh token，因此后台保活不能保证 refresh token 永久有效。控制台会记录当前 refresh token 的首次观察时间；连续使用约 25 天后显示“建议重扫”，给可能存在的约 30 天失效窗口预留处理时间。只有微信实际返回不同的 refresh token 时，这个计时才会重置。
-
-可以在 `.env` 中调整：
-
-```dotenv
-YYB_KEEPALIVE_INTERVAL=30m
-YYB_KEEPALIVE_AHEAD=45m
-```
-
-将 `YYB_KEEPALIVE_INTERVAL` 设为 `0` 可关闭后台保活。提前续期遇到临时网络失败时会保留当前账号状态并在后续周期重试；凭据真正过期或 refresh token 被服务端撤销后仍然需要重新扫码。
-
-## 青龙与呆呆面板接入
-
-支持对接 **青龙面板 (Qinglong)** 与 **呆呆面板 (daidai-panel)**：
-
-- **Web 控制台配置**：可在 Web 控制台的“面板连接设置”中选择【青龙面板】或【呆呆面板 (daidai-panel)】，填入面板地址与对应的鉴权凭据（青龙使用 `Client ID` / `Client Secret`；呆呆面板使用 `App Key` / `App Secret`）。配置会持久化到 SQLite 数据库并优先于容器环境变量。
-- **连接类型识别**：保存连接时若面板类型选错，且当前地址返回 `404` 或 `405`，系统会尝试另一种驱动；识别成功后使用正确的面板类型。
-- **青龙环境变量配置**：
-  ```dotenv
-  PANEL_TYPE=qinglong
-  QL_URL=http://qinglong:5700
-  QL_CLIENT_ID=你的青龙ClientID
-  QL_CLIENT_SECRET=你的青龙ClientSecret
-  ```
-- **呆呆面板环境变量配置**：
-  ```dotenv
-  PANEL_TYPE=daidai
-  DAIDAI_URL=http://daidai-panel:5700
-  DAIDAI_APP_KEY=你的呆呆面板AppKey
-  DAIDAI_APP_SECRET=你的呆呆面板AppSecret
-  ```
-
-升级前已经使用青龙的部署不需要迁移配置，原有 `QL_URL`、`QL_CLIENT_ID` 和 `QL_CLIENT_SECRET` 会继续生效。面板适配层会分别处理青龙和呆呆的任务启停、运行状态与日志接口，避免混用两种面板不同的状态字段。
-
-扫码成功页和账号控制台都提供“添加/同步到面板”按钮。同步会保留 `YYB_SERVER` 中已有的多行内容和环境变量备注，只追加缺少的账号，并同时识别账号 ID 与 OpenID，避免重复添加。
-
-当面板和本服务都连接到 `qinglong_default` 网络后，面板环境变量可以填写：
+`YYB_SERVER` 每行一个账号：
 
 ```text
-YYB_SERVER=yyb-go:8000@1
+http://yyb-go:8000@1
+http://yyb-go:8000@账号OpenID
 ```
 
-`@` 后可以使用控制台显示的账号 ID 或 OpenID。账号 ID 是本地数据库编号，删除并重新添加账号后可能变化；OpenID 更适合长期配置。
-
-已确认报错的青龙/呆呆面板脚本修复版收录在 [`scripts/`](scripts/README.md)。
-
-## API 示例
-
-截图中的短路径均已提供兼容入口：
-
-```text
-/wx/code             获取小程序 code
-/wx/getuserinfo      获取 YYB 账号用户信息
-/wx/encryptkey       加密能力兼容转发（需要真实 payload）
-/wx/getphonenumber   获取手机号
-/wx/cloud            云函数（通过 operateWxData 传递 payload）
-/wx/qrcodeauth       二维码授权会话
-/wx/mpgeta8key       文章会话（通过 operateWxData 传递 payload）
-/wx/appmsgext        文章扩展数据（通过 operateWxData 传递 payload）
-/wx/appmsglike       文章点赞（通过 operateWxData 传递 payload）
-```
-
-这些接口不会伪造微信返回值。`/wx/encryptkey`、`/wx/cloud`、`/wx/mpgeta8key`、`/wx/appmsgext` 和 `/wx/appmsglike` 都是 `operateWxData` 兼容转发，调用方必须在 `payload` 中提供目标业务真实使用的 `api_name`、`data` 等字段，例如：
-
-```json
-{
-  "ref": "1",
-  "app_id": "wx0000000000000000",
-  "payload": {
-    "api_name": "callFunction",
-    "data": {"name": "签到", "data": {}}
-  }
-}
-```
-
-`payload` 会原样传给微信协议层，路由名称不会自动生成目标业务参数。文章会话接口不能只根据文章 URL 推导 `api_name`、会话或点赞参数；需要抓取 PC 微信调用 `operateWxData` 时的原始请求体，而不是文章最终 HTTP 请求。
-
-同样，业务接口中的 `encryptData` 不等于 `/wx/encryptkey` 可以直接返回的通用 Key。仅抓到业务服务器的最终 POST 无法确定它是微信能力、云函数还是小程序自己的 JavaScript 加密。若没有原始 `operateWxData` 调用，接口会返回明确的 `payload is required`，不会再发送已知无效的空 `getUserEncryptKey` 请求。
-
-若目标能力并不经过 `operateWxData`，服务端会原样返回微信协议错误，需要根据目标小程序的原始调用补充专用协议实现。
-
-获取 `wx.login` code：
+获取小程序 `wx.login` code：
 
 ```bash
 curl -X POST http://yyb-go:8000/wxapp/getCode \
@@ -221,41 +148,46 @@ curl -X POST http://yyb-go:8000/wxapp/getCode \
   -d '{"ref":"1","app_id":"wx0000000000000000"}'
 ```
 
-主动刷新单个账号状态：
+如果配置了 `YYB_PROTOCOL_TOKEN`，请求还需携带 `Authorization: Bearer <token>`。接口清单、公众号 OAuth 边界和 `operateWxData` 参数说明见 [协议接口说明](docs/protocol-api.md)，运行中的服务也提供 OpenAPI 页面。
 
-```bash
-curl -X POST http://yyb-go:8000/accounts/refresh \
-  -H 'Content-Type: application/json' \
-  -d '{"ref":"1"}'
-```
+## 账号代理与保活
 
-Web 控制台内还提供完整的 OpenAPI 文档入口。
+- 直连、静态 HTTP CONNECT、SOCKS5 和动态 API 均按账号独立保存。
+- 动态 API 支持 `txt`、`json`、`json2` 及常见嵌套结构，并可复用命名的品赞、巨量配置。
+- 短效动态代理只用于扫码和临时请求，不参与账号长期保活。
+- 后台按凭据剩余时间触发刷新；微信明确拒绝 refresh token 后才标记为需要重扫。
 
-## 账号运行管理
+配置格式、地区匹配、刷新窗口和安全注意事项见 [代理与账号保活](docs/proxy-keepalive.md)。
 
-在 `.env` 中配置青龙 OpenAPI 后，打开 `/runs`：
+## 文档导航
 
-```dotenv
-QL_URL=http://qinglong:5700
-QL_CLIENT_ID=你的青龙应用 Client ID
-QL_CLIENT_SECRET=你的青龙应用 Client Secret
-YYB_QINGLONG_SERVER=yyb-go:8000
-YYB_QINGLONG_REPO=SuperNaiBA_YYB-GO-Script,525815266_YYB-Go-Enhanced/scripts
-```
+| 文档 | 内容 |
+| --- | --- |
+| [配置与账号安全](docs/configuration.md) | SQLite/MySQL、管理员、用户权限、令牌、实验性本机微信授权 |
+| [面板接入与排错](docs/panel-integration.md) | 青龙、呆呆、Arcadia、跨服务器访问、运行管理与日志 |
+| [协议接口说明](docs/protocol-api.md) | `/wx/*`、`/wxapp/*`、OAuth、云函数与真实 payload 边界 |
+| [代理与账号保活](docs/proxy-keepalive.md) | 静态/动态代理、品赞、巨量、刷新策略与失效状态 |
+| [脚本管理](scripts/README.md) | YYB 适配脚本、拉取工具、任务元数据与公共账号缓存 |
+| [Magisk 模块](docs/magisk.md) | Android ARM64 安装、升级、局域网监听与 DNS |
+| [系统维护](docs/maintenance.md) | Docker 在线检查、宿主机维护执行器、恢复和安全边界 |
+| [构建与发布](docs/release-builds.md) | Docker、Magisk、跨平台二进制与 GitHub Actions |
 
-`YYB_QINGLONG_REPO` 填青龙定时任务命令中 `task` 后面的仓库目录，多个目录用英文逗号分隔。通过本仓库订阅脚本时通常为 `525815266_YYB-Go-Enhanced/scripts`；通过上游脚本仓库订阅时为 `SuperNaiBA_YYB-GO-Script`。
+## 更新
 
-管理页发现上述仓库目录中的 `.js` 和 `.py` 任务。每个“账号 + 脚本”会创建一个独立青龙任务，新任务默认关闭；手动点击“运行一次”才会立即执行。账号变量通过青龙 `task_before` 注入，运行日志按“账号 + 脚本”写入独立目录，管理页只读取当前账号的目录。账号推送 Token 不写入任务命令和 YYB 数据库，接口也不会返回明文。
+管理员可点击控制台顶栏版本号检查新版本。系统会识别当前运行环境：Windows、Linux、macOS 裸机提供匹配架构的 Release 下载，Magisk 提供模块 ZIP；Docker 仅在维护执行器已连接时提供在线更新和重启。
 
-如果原订阅生成的全局任务仍在运行，管理页会显示重复运行提示。迁移到账号任务后，请在青龙中停用对应的旧全局任务。
+v0.2.24 根据 #74 的反馈，增加仅供版本检查使用的 `YYB_UPDATE_PROXY` 和可选的 `YYB_UPDATE_VERSION_URL`，并修复前端过早取消备用查询的问题。默认仍使用官方 Raw / API / Release 来源，不内置第三方镜像。遇到连接重置或 403，请按[更新网络排错](docs/maintenance.md#检查更新报连接重置或-http-403issue-74)检查容器到宿主机代理的可达性；Docker 拉取镜像使用宿主机的独立网络配置。感谢 @Xx1aoy1 提供 Armbian 实测排查过程。
 
-## 数据与安全
+完整版本变化见 [CHANGELOG.md](CHANGELOG.md)。
 
-- 不要提交 `.env`、`data/`、SQLite 数据库、登录凭据或真实 OpenID。
-- 建议仅在可信局域网内运行，不要把内部的 `yyb-go:8000` 接口直接暴露到公网。
-- `wx.login` code 是短期且一次性的；refresh token 也可能被服务端撤销，失效后需要重新扫码。
-- 本项目仅供学习和个人研究使用，请遵守相关平台条款及所在地法律法规。
+## 安全边界
 
-## 来源说明
+- 默认只在可信局域网、VPN 或受控反向代理后使用，不要直接暴露协议接口和数据库。
+- 公网使用时必须配置 HTTPS、`YYB_COOKIE_SECURE=true` 和随机 `YYB_PROTOCOL_TOKEN`。
+- 不要提交 `.env`、`data/`、SQLite 数据库、代理密钥、OpenID 或微信登录凭据。
+- `wx.login` code 是短期且一次性的；公众号 OAuth code 必须由用户在微信内完成授权后回调产生。
+- 项目不会伪造微信返回值，也不会从缺失的业务参数中推导签名、加密数据或授权结果。
 
-本项目基于 [SuperNaiBA/YYB_GO](https://github.com/SuperNaiBA/YYB_GO) 整理和增强，主要补充了账号信息展示、OpenID 可见性、Web 控制台资源修复、Docker 部署与访问保护。请同时遵守上游项目的授权条件；如需分发或商业使用，请先取得相应权利人的许可。
+## 来源
+
+项目基于 [SuperNaiBA/YYB_GO](https://github.com/SuperNaiBA/YYB_GO) 整理和增强。使用和分发时请同时遵守上游授权条件、目标平台规则及所在地法律法规。

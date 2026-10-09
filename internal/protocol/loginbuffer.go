@@ -6,12 +6,24 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
 	"time"
 )
+
+var ErrMissingRefreshToken = errors.New("missing refresh token")
+
+type RefreshRejectedError struct {
+	Code    int
+	Message string
+}
+
+func (e *RefreshRejectedError) Error() string {
+	return fmt.Sprintf("refresh failed: code=%d msg=%s", e.Code, e.Message)
+}
 
 const (
 	yybHost         = "https://yybadaccess.3g.qq.com"
@@ -34,6 +46,13 @@ type LoginBufferCredentials struct {
 }
 
 func CredentialsFromMap(m map[string]any) LoginBufferCredentials {
+	expiresIn := defaultInt64(int64FromMap(m, "expires_in"), 7200)
+	expiresAt := int64FromMap(m, "expires_at")
+	if expiresAt <= 0 {
+		if refreshedAt := int64FromMap(m, "refresh_refreshed_at"); refreshedAt > 0 {
+			expiresAt = refreshedAt + expiresIn
+		}
+	}
 	return LoginBufferCredentials{
 		OpenID:                 stringFromMap(m, "openid"),
 		AccessToken:            stringFromMap(m, "accesstoken"),
@@ -41,15 +60,12 @@ func CredentialsFromMap(m map[string]any) LoginBufferCredentials {
 		RefreshTokenObservedAt: int64FromMap(m, "refresh_token_observed_at"),
 		LoginType:              defaultString(stringFromMap(m, "logintype"), "WX"),
 		Nickname:               stringFromMap(m, "nickname"),
-		ExpiresAt:              int64FromMap(m, "expires_at"),
-		ExpiresIn:              defaultInt64(int64FromMap(m, "expires_in"), 7200),
+		ExpiresAt:              expiresAt,
+		ExpiresIn:              expiresIn,
 	}
 }
 
 func (c LoginBufferCredentials) ToMap() map[string]any {
-	if c.RefreshToken != "" && c.RefreshTokenObservedAt <= 0 {
-		c.RefreshTokenObservedAt = time.Now().Unix()
-	}
 	return map[string]any{
 		"openid":                    c.OpenID,
 		"accesstoken":               c.AccessToken,
@@ -61,6 +77,18 @@ func (c LoginBufferCredentials) ToMap() map[string]any {
 		"expires_in":                defaultInt64(c.ExpiresIn, 7200),
 		"refresh_refreshed_at":      time.Now().Unix(),
 	}
+}
+
+// ToMapForScan serializes credentials captured from a successful QR scan.
+// The 30-day window is the scan/authorization window, not the time at which a
+// legacy account happens to be refreshed by keepalive. Keeping this explicit
+// prevents old records without lifecycle metadata from being backfilled with
+// a misleading "scanned just now" timestamp.
+func (c LoginBufferCredentials) ToMapForScan() map[string]any {
+	if c.RefreshToken != "" && c.RefreshTokenObservedAt <= 0 {
+		c.RefreshTokenObservedAt = time.Now().Unix()
+	}
+	return c.ToMap()
 }
 
 func (c LoginBufferCredentials) Expired(skew time.Duration) bool {
@@ -130,7 +158,7 @@ func (c *LoginBufferClient) FetchLoginBuffer(ctx context.Context, creds LoginBuf
 
 func (c *LoginBufferClient) RefreshCredentials(ctx context.Context, creds LoginBufferCredentials) (LoginBufferCredentials, error) {
 	if creds.RefreshToken == "" {
-		return LoginBufferCredentials{}, fmt.Errorf("missing refresh token")
+		return LoginBufferCredentials{}, ErrMissingRefreshToken
 	}
 	body, err := json.Marshal(refreshTokenRequest{UserInfo: refreshTokenUserInfo{
 		OpenID:       creds.OpenID,
@@ -152,19 +180,15 @@ func (c *LoginBufferClient) RefreshCredentials(ctx context.Context, creds LoginB
 	}, &data); err != nil {
 		return LoginBufferCredentials{}, err
 	}
-	if intFromAny(data["code"]) != 0 {
-		return LoginBufferCredentials{}, fmt.Errorf("refresh failed: code=%v msg=%v", data["code"], data["msg"])
+	if code := intFromAny(data["code"]); code != 0 {
+		return LoginBufferCredentials{}, &RefreshRejectedError{Code: code, Message: fmt.Sprint(data["msg"])}
 	}
 	info, _ := data["user_info"].(map[string]any)
 	expiresIn := defaultInt64(int64FromMap(info, "expires_in"), 7200)
 	refreshed := creds
-	if refreshed.RefreshToken != "" && refreshed.RefreshTokenObservedAt <= 0 {
-		refreshed.RefreshTokenObservedAt = time.Now().Unix()
-	}
 	refreshed.AccessToken = stringFromMap(info, "access_token")
 	if rt := stringFromMap(info, "refresh_token"); rt != "" && rt != refreshed.RefreshToken {
 		refreshed.RefreshToken = rt
-		refreshed.RefreshTokenObservedAt = time.Now().Unix()
 	}
 	refreshed.ExpiresIn = expiresIn
 	refreshed.ExpiresAt = time.Now().Unix() + expiresIn

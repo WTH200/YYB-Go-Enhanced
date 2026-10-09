@@ -46,6 +46,11 @@ type jobActionIn struct {
 	Enabled   bool   `json:"enabled"`
 }
 
+type runLogIn struct {
+	Ref    string `json:"ref"`
+	LogKey string `json:"log_key"`
+}
+
 type pushSettingIn struct {
 	Ref     string  `json:"ref"`
 	Channel string  `json:"channel"`
@@ -129,6 +134,7 @@ func (a *App) handleQingLongJobs(w http.ResponseWriter, r *http.Request) {
 		if job, exists := jobsByKey[source.Key]; exists {
 			if cron, found := cronsByID[job.QLCronID]; found {
 				item.Provisioned = true
+				item.Schedule = cron.getSchedule()
 				item.Enabled = cron.enabled()
 				item.Running = cron.running()
 				item.QLCronID = cron.ID
@@ -259,15 +265,29 @@ func (a *App) handleQingLongRuns(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleQingLongRunLog(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	acc, ok := a.resolveAccountFromQuery(w, r)
+	ref := strings.TrimSpace(r.URL.Query().Get("ref"))
+	logKey := strings.TrimSpace(r.URL.Query().Get("log_key"))
+	if r.Method == http.MethodPost {
+		var body runLogIn
+		if err := decodeOptionalJSON(r, &body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		ref = strings.TrimSpace(body.Ref)
+		logKey = strings.TrimSpace(body.LogKey)
+	}
+	acc, ok := a.resolveAccountRef(w, r, ref)
 	if !ok {
 		return
 	}
-	logKey := strings.TrimSpace(r.URL.Query().Get("log_key"))
+	if logKey == "" {
+		writeError(w, http.StatusBadRequest, "缺少日志键")
+		return
+	}
 	runs, err := a.accountRunHistory(r.Context(), acc.ID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
@@ -284,35 +304,69 @@ func (a *App) handleQingLongRunLog(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "该日志不属于当前账号或已被清理")
 		return
 	}
+	latest := true
+	for i := range runs {
+		if runs[i].QLCronID == selected.QLCronID && runs[i].StartedAt > selected.StartedAt {
+			latest = false
+			break
+		}
+	}
 	separator := strings.LastIndex(logKey, "/")
 	if separator <= 0 || separator == len(logKey)-1 {
 		writeError(w, http.StatusBadRequest, "日志路径不合法")
 		return
 	}
-	logText, err := a.qinglong.logDetail(r.Context(), logKey[:separator], logKey[separator+1:])
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+	var logText string
+	var logErr error
+	if latest && a.qinglong.getPanelType() != PanelTypeArcadia {
+		// QingLong's task-log endpoint is the same path used by its own UI and
+		// avoids reverse proxies that block or time out /open/logs/detail.
+		logText, logErr = a.qinglong.cronLog(r.Context(), selected.QLCronID)
+		if logErr != nil {
+			logText, logErr = a.qinglong.logDetail(r.Context(), logKey[:separator], logKey[separator+1:])
+		}
+	} else {
+		// Historical files (and Arcadia's isolated files) are addressed by the
+		// log key because there is no reliable current-task fallback.
+		logText, logErr = a.qinglong.logDetail(r.Context(), logKey[:separator], logKey[separator+1:])
+	}
+	if logErr != nil {
+		writeError(w, http.StatusBadGateway, logErr.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"account_id": acc.ID, "script_key": selected.ScriptKey, "log_key": logKey, "log": logText})
 }
 
 func (a *App) accountRunHistory(ctx context.Context, accountID int64) ([]accountRunPublic, error) {
-	sources, cronsByID, err := a.scriptCatalog(ctx)
+	// History only needs the managed cron records. Avoid rebuilding the entire
+	// script catalog on every refresh; that can require several panel requests
+	// and is especially fragile behind a reverse proxy.
+	crons, err := a.qinglong.listCrons(ctx, "")
 	if err != nil {
 		return nil, err
+	}
+	cronsByID := make(map[int64]qingLongCron, len(crons))
+	for _, cron := range crons {
+		cronsByID[cron.ID] = cron
 	}
 	jobs, err := a.db.ListAccountScriptJobs(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	logs, err := a.qinglong.listLogs(ctx)
-	if err != nil {
-		return nil, err
+	var logs []qingLongLogEntry
+	if a.qinglong.getPanelType() != PanelTypeDaidai {
+		logs, err = a.qinglong.listLogs(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
-	sourceByKey := make(map[string]scriptSource, len(sources))
-	for _, source := range sources {
-		sourceByKey[source.Key] = source
+	sourceByKey := make(map[string]string)
+	if repos, repoErr := qingLongRepoRoots(a.cfg.QingLongRepo); repoErr == nil {
+		for _, cron := range crons {
+			if key, _, ok := parseScriptKeyFromCron(cron, repos); ok {
+				sourceByKey[key] = cron.Name
+			}
+		}
 	}
 	logRoots := make(map[string]qingLongLogEntry, len(logs))
 	for _, entry := range logs {
@@ -327,6 +381,18 @@ func (a *App) accountRunHistory(ctx context.Context, accountID int64) ([]account
 		if !exists {
 			continue
 		}
+		// Daidai exposes latest-log by task ID, not QingLong's directory tree.
+		// Keep ownership tied to our account_script_jobs mapping.
+		if a.qinglong.getPanelType() == PanelTypeDaidai {
+			status := "最近日志"
+			if cron.running() {
+				status = "运行中"
+			}
+			out = append(out, accountRunPublic{AccountID: accountID, ScriptKey: job.ScriptKey,
+				Name: job.ScriptKey, QLCronID: cron.ID, LogKey: fmt.Sprintf("daidai/%d", cron.ID),
+				StartedAt: cron.getLastExecutionAt(), Running: cron.running(), TaskStatus: status})
+			continue
+		}
 		rootKey := strings.Trim(cron.LogName, "/")
 		if rootKey == "" {
 			if separator := strings.Index(cron.LogPath, "/"); separator > 0 {
@@ -334,14 +400,22 @@ func (a *App) accountRunHistory(ctx context.Context, accountID int64) ([]account
 			}
 		}
 		root, exists := logRoots[rootKey]
-		if !exists {
+		children := append([]qingLongLogEntry(nil), root.Children...)
+		if !exists && strings.TrimSpace(cron.LogPath) != "" {
+			// Some QingLong versions omit the managed directory from /open/logs
+			// while still returning the latest file path on the cron record.
+			path := strings.Trim(cron.LogPath, "/")
+			if separator := strings.LastIndex(path, "/"); separator > 0 && strings.HasSuffix(strings.ToLower(path[separator+1:]), ".log") {
+				children = []qingLongLogEntry{{Title: path[separator+1:], Key: path, Type: "file", Size: 0, CreateTime: cron.getLastExecutionAt() * 1000}}
+			}
+		}
+		if len(children) == 0 {
 			continue
 		}
-		children := append([]qingLongLogEntry(nil), root.Children...)
 		sort.Slice(children, func(i, j int) bool { return children[i].CreateTime > children[j].CreateTime })
 		name := job.ScriptKey
-		if source, found := sourceByKey[job.ScriptKey]; found {
-			name = source.Name
+		if sourceName, found := sourceByKey[job.ScriptKey]; found && !strings.HasPrefix(sourceName, "[YYB:") {
+			name = sourceName
 		}
 		for index, entry := range children {
 			if entry.Type != "file" || !strings.HasSuffix(strings.ToLower(entry.Title), ".log") {
@@ -468,11 +542,15 @@ func parseScriptKeyFromCron(cron qingLongCron, repos []string) (string, string, 
 		return "", "", false
 	}
 	cmd := strings.TrimSpace(cron.Command)
-	for _, p := range []string{"task ", "node ", "python3 ", "python "} {
+	for _, p := range []string{"arcadia run ", "task ", "node ", "python3 ", "python "} {
 		if strings.HasPrefix(cmd, p) {
 			cmd = strings.TrimSpace(strings.TrimPrefix(cmd, p))
 		}
 	}
+	// Daidai and Windows-based QingLong clients may return task commands with
+	// backslashes. Normalize before matching configured repository roots so the
+	// same task is visible regardless of the panel's path separator.
+	cmd = strings.ReplaceAll(cmd, "\\", "/")
 	for _, repo := range repos {
 		cleanRepo := strings.Trim(strings.TrimSpace(repo), "/")
 		prefix := cleanRepo + "/"
@@ -536,6 +614,19 @@ func (a *App) ensureAccountJob(ctx context.Context, acc *store.WechatAccount, sc
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return nil, scriptSource{}, err
 	}
+
+	// A YYB reinstall can remove the local account_script_jobs row while the
+	// managed cron remains in QingLong. Reuse that cron instead of trying to
+	// create a duplicate (QingLong rejects duplicate command/schedule pairs).
+	if crons, scanErr := a.qinglong.listCrons(ctx, ""); scanErr == nil {
+		if existing, ok := findManagedAccountCron(crons, acc.ID, scriptKey, command); ok {
+			if err := a.qinglong.updateCron(ctx, existing.ID, name, command, source.Schedule, taskBefore, logName); err != nil {
+				return nil, scriptSource{}, err
+			}
+			job, err := a.db.UpsertAccountScriptJob(ctx, acc.ID, scriptKey, existing.ID, source.Schedule)
+			return job, source, err
+		}
+	}
 	cron, err := a.qinglong.createCron(ctx, name, command, source.Schedule, taskBefore, logName)
 	if err != nil {
 		return nil, scriptSource{}, err
@@ -545,6 +636,35 @@ func (a *App) ensureAccountJob(ctx context.Context, acc *store.WechatAccount, sc
 	}
 	job, err = a.db.UpsertAccountScriptJob(ctx, acc.ID, scriptKey, cron.ID, source.Schedule)
 	return job, source, err
+}
+
+// findManagedAccountCron locates a cron created for this account and script.
+// The account marker is required so a normal, shared QingLong task can never
+// be adopted merely because it happens to use the same script.
+func findManagedAccountCron(crons []qingLongCron, accountID int64, scriptKey, expectedCommand string) (qingLongCron, bool) {
+	prefix := fmt.Sprintf("[YYB:%d]", accountID)
+	expected := normalizeCronCommand(expectedCommand)
+	for _, cron := range crons {
+		if !strings.HasPrefix(strings.TrimSpace(cron.Name), prefix) {
+			continue
+		}
+		actual := normalizeCronCommand(cron.Command)
+		if actual == expected || strings.HasSuffix(actual, "/"+strings.TrimSpace(scriptKey)) {
+			return cron, true
+		}
+	}
+	return qingLongCron{}, false
+}
+
+func normalizeCronCommand(command string) string {
+	command = strings.TrimSpace(command)
+	for _, prefix := range []string{"arcadia run ", "task ", "node ", "python3 ", "python "} {
+		if strings.HasPrefix(command, prefix) {
+			command = strings.TrimSpace(strings.TrimPrefix(command, prefix))
+			break
+		}
+	}
+	return command
 }
 
 func managedTaskName(acc *store.WechatAccount, sourceName string) string {

@@ -188,6 +188,16 @@ func (d *qingLongDriver) UpdateEnvEntry(ctx context.Context, env qingLongEnv, ne
 	return d.UpdateEnv(ctx, env.ID, env.Name, newValue, env.Remarks)
 }
 
+// DeleteEnvs removes environment entries whose value would otherwise become
+// empty. QingLong rejects an empty value on PUT, so cleanup must delete the
+// final YYB_SERVER entry instead of updating it to an empty string.
+func (d *qingLongDriver) DeleteEnvs(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return d.request(ctx, http.MethodDelete, "/open/envs", ids, nil)
+}
+
 func (d *qingLongDriver) SetEnvsEnabled(ctx context.Context, ids []int64, enabled bool) error {
 	path := "/open/envs/disable"
 	if enabled {
@@ -255,7 +265,15 @@ func (d *qingLongDriver) CreateCron(ctx context.Context, name, command, schedule
 		"log_name":    logName,
 	}
 	var raw json.RawMessage
-	if err := d.request(ctx, http.MethodPost, "/open/crons", body, &raw); err != nil {
+	err := d.request(ctx, http.MethodPost, "/open/crons", body, &raw)
+	if isQingLongLogNameValidationError(err) {
+		// Recent QingLong releases reject the optional log_name field. Retry
+		// with the core cron schema so task creation remains compatible.
+		delete(body, "log_name")
+		raw = nil
+		err = d.request(ctx, http.MethodPost, "/open/crons", body, &raw)
+	}
+	if err != nil {
 		return nil, err
 	}
 	var cron qingLongCron
@@ -271,7 +289,20 @@ func (d *qingLongDriver) CreateCron(ctx context.Context, name, command, schedule
 
 func (d *qingLongDriver) UpdateCron(ctx context.Context, id int64, name, command, schedule, taskBefore, logName string) error {
 	body := map[string]any{"id": id, "name": name, "command": command, "schedule": schedule, "task_before": taskBefore, "log_name": logName}
-	return d.request(ctx, http.MethodPut, "/open/crons", body, nil)
+	err := d.request(ctx, http.MethodPut, "/open/crons", body, nil)
+	if isQingLongLogNameValidationError(err) {
+		delete(body, "log_name")
+		err = d.request(ctx, http.MethodPut, "/open/crons", body, nil)
+	}
+	return err
+}
+
+func isQingLongLogNameValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "log_name") && strings.Contains(message, "not allowed")
 }
 
 func (d *qingLongDriver) SetCronsEnabled(ctx context.Context, ids []int64, enabled bool) error {
@@ -320,15 +351,8 @@ func (d *qingLongDriver) LogDetail(ctx context.Context, dir, filename string) (s
 	}
 	var out string
 	reqPath := "/open/logs/detail?" + url.Values{"path": {logPath}}.Encode()
-	if err := d.request(ctx, http.MethodGet, reqPath, nil, &out); err == nil && out != "" {
-		return out, nil
+	if err := d.request(ctx, http.MethodGet, reqPath, nil, &out); err != nil {
+		return "", err
 	}
-	altPath := "/open/logs/" + url.PathEscape(dir)
-	if filename != "" {
-		altPath += "/" + url.PathEscape(filename)
-	}
-	if err := d.request(ctx, http.MethodGet, altPath, nil, &out); err == nil {
-		return out, nil
-	}
-	return "", d.request(ctx, http.MethodGet, reqPath, nil, &out)
+	return out, nil
 }

@@ -35,6 +35,26 @@ func TestMergeYYBServerValueIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestManagedYYBServerRemarksUsesNicknameAndKeepsCustomText(t *testing.T) {
+	nickname := "微信昵称"
+	remark := "自定义备注"
+	alias := "wx_alias"
+	accounts := []*store.WechatAccount{
+		{ID: 1, Nickname: &nickname, Remark: &remark, Alias: &alias},
+		{ID: 2, Remark: &remark},
+		{ID: 3},
+	}
+	want := "YYB Go 账号：微信昵称、自定义备注、ID 3"
+	for _, existing := range []string{"", "YYB Go 账号列表", "YYB Go 账号：旧昵称"} {
+		if got := managedYYBServerRemarks(existing, accounts); got != want {
+			t.Fatalf("managedYYBServerRemarks(%q) = %q, want %q", existing, got, want)
+		}
+	}
+	if got := managedYYBServerRemarks("用户自定义说明", accounts); got != "用户自定义说明" {
+		t.Fatalf("custom remarks changed to %q", got)
+	}
+}
+
 func TestRemoveAccountFromYYBServer(t *testing.T) {
 	acc := &store.WechatAccount{ID: 3, OpenID: "openid-3"}
 	tests := []struct {
@@ -104,6 +124,29 @@ func TestDeleteAccountCleansQingLongLinks(t *testing.T) {
 	}
 	if value != "manual-line\nyyb-go:8000@8" || remarks != "keep-this-remark" || status != 1 {
 		t.Fatalf("YYB_SERVER after delete = %q, remarks=%q, status=%d", value, remarks, status)
+	}
+}
+
+func TestDeleteAccountRemovesFinalYYBServerEnv(t *testing.T) {
+	fake, server := newFakeQingLong(t)
+	_, handler, ref := newRunsTestApp(t, server.URL)
+	fake.mu.Lock()
+	fake.envs = append(fake.envs, qingLongEnv{
+		ID: 41, Name: "YYB_SERVER", Value: "yyb-go:8000@" + ref,
+		Remarks: "YYB Go 账号列表", Status: 1,
+	})
+	fake.mu.Unlock()
+
+	response := apiRequest(t, handler, http.MethodDelete, "/accounts?ref="+ref, nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"qinglong_cleanup":"completed"`) {
+		t.Fatalf("delete response = %d %s", response.Code, response.Body.String())
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	for _, env := range fake.envs {
+		if env.Name == "YYB_SERVER" {
+			t.Fatalf("final YYB_SERVER environment was not removed: %+v", env)
+		}
 	}
 }
 
@@ -184,6 +227,32 @@ func TestRemarkUpdatesManagedNameAndSyncPreservesExistingEnv(t *testing.T) {
 	if remarks != "keep-this-remark" {
 		t.Fatalf("YYB_SERVER remarks = %q", remarks)
 	}
+}
+
+func TestSyncUpdatesDefaultYYBServerRemarksToNickname(t *testing.T) {
+	fake, server := newFakeQingLong(t)
+	app, handler, ref := newRunsTestApp(t, server.URL)
+	nickname := "微信昵称"
+	status := "alive"
+	if _, err := app.db.UpsertAccount(context.Background(), "test-openid", "buffer", nil, &nickname, nil, nil, nil, &status); err != nil {
+		t.Fatalf("update account nickname: %v", err)
+	}
+	fake.mu.Lock()
+	fake.envs = append(fake.envs, qingLongEnv{ID: 41, Name: "YYB_SERVER", Value: "yyb-go:8000@" + ref, Remarks: "YYB Go 账号列表"})
+	fake.mu.Unlock()
+
+	sync := apiRequest(t, handler, http.MethodPost, "/api/qinglong/sync", map[string]any{"ref": ref})
+	if sync.Code != http.StatusOK {
+		t.Fatalf("sync response = %d %s", sync.Code, sync.Body.String())
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	for _, env := range fake.envs {
+		if env.Name == "YYB_SERVER" && env.Remarks == "YYB Go 账号：微信昵称" {
+			return
+		}
+	}
+	t.Fatalf("YYB_SERVER nickname remarks not found: %+v", fake.envs)
 }
 
 func TestQingLongConfigNeverReturnsSecret(t *testing.T) {

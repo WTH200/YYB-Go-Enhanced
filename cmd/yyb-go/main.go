@@ -17,14 +17,38 @@ import (
 )
 
 func main() {
+	envFile := flag.String("env-file", "", "dotenv file; defaults to .env beside executable, then working directory")
 	host := flag.String("host", "127.0.0.1", "listen host")
 	port := flag.Int("port", 8000, "listen port")
 	resourceRoot := flag.String("resource-root", filepath.Join(".", "resource"), "runtime resource directory")
 	dbFilename := flag.String("db", httpapi.DefaultDBFilename, "SQLite database filename under resource/db")
 	tcpProxy := flag.String("tcp-proxy", "", "optional TCP proxy: socks5://host:port or http-connect://host:port")
-	keepAliveInterval := flag.Duration("keepalive-interval", 30*time.Minute, "account keepalive check interval; 0 disables")
+	keepAliveInterval := flag.Duration("keepalive-interval", time.Minute, "account keepalive check interval; 0 disables")
 	keepAliveAhead := flag.Duration("keepalive-ahead", 45*time.Minute, "refresh credentials this long before expiry")
 	flag.Parse()
+	executable, executableErr := os.Executable()
+	executableDir := ""
+	if executableErr == nil {
+		executableDir = filepath.Dir(executable)
+	}
+	workingDir, err := os.Getwd()
+	if err != nil {
+		log.Fatal("无法读取当前工作目录")
+	}
+	if loaded, err := loadEnvFile(*envFile, executableDir, workingDir); err != nil {
+		log.Fatal(err)
+	} else if loaded != "" {
+		log.Printf("loaded configuration: %s", loaded)
+	}
+	if err := applyEnvFlags(flag.CommandLine); err != nil {
+		log.Fatal(err)
+	}
+	resourceRootExplicit := false
+	flag.Visit(func(current *flag.Flag) {
+		if current.Name == "resource-root" {
+			resourceRootExplicit = true
+		}
+	})
 	if dnsServers, err := configureDNS(os.Getenv("YYB_DNS_SERVERS")); err != nil {
 		log.Fatalf("configure DNS: %v", err)
 	} else if len(dnsServers) > 0 {
@@ -35,9 +59,15 @@ func main() {
 	if panelType == "" {
 		panelType = "qinglong"
 	}
+	panelType = strings.ToLower(strings.TrimSpace(panelType))
 
 	var panelURL string
-	if panelType == "daidai" {
+	if panelType == "arcadia" {
+		panelURL = getEnvWithFallback("ARCADIA_URL")
+		if panelURL == "" {
+			panelURL = "http://arcadia:5678"
+		}
+	} else if panelType == "daidai" {
 		daidaiURL := getEnvWithFallback("DAIDAI_URL")
 		qlURL := getEnvWithFallback("QL_URL")
 		if daidaiURL != "" {
@@ -60,7 +90,10 @@ func main() {
 	}
 
 	var clientID, clientSecret string
-	if panelType == "daidai" {
+	if panelType == "arcadia" {
+		clientID = "api-token"
+		clientSecret = getEnvWithFallback("ARCADIA_TOKEN")
+	} else if panelType == "daidai" {
 		clientID = getEnvWithFallback("DAIDAI_APP_KEY", "QL_CLIENT_ID")
 		clientSecret = getEnvWithFallback("DAIDAI_APP_SECRET", "QL_CLIENT_SECRET")
 	} else {
@@ -79,7 +112,11 @@ func main() {
 	}
 
 	cfg := httpapi.Config{
+		MaintenanceSocket: strings.TrimSpace(os.Getenv("YYB_MAINTENANCE_SOCKET")),
+		UpdateProxy:       strings.TrimSpace(os.Getenv("YYB_UPDATE_PROXY")),
+		UpdateVersionURL:  strings.TrimSpace(os.Getenv("YYB_UPDATE_VERSION_URL")),
 		ResourceRoot:      *resourceRoot,
+		EmbeddedWebAssets: !resourceRootExplicit,
 		DBFilename:        *dbFilename,
 		TCPProxy:          *tcpProxy,
 		SessionTTL:        30 * time.Minute,
@@ -95,12 +132,16 @@ func main() {
 		QingLongSecret:    clientSecret,
 		QingLongServer:    os.Getenv("YYB_QINGLONG_SERVER"),
 		QingLongRepo:      os.Getenv("YYB_QINGLONG_REPO"),
+		QingLongRefMode:   getEnvWithFallback("YYB_QINGLONG_REF_MODE", "YYB_ACCOUNT_REF_MODE"),
 		AuthDriver:        authDriver,
 		AuthDSN:           os.Getenv("YYB_AUTH_DSN"),
 		AuthMySQLDSN:      legacyAuthDSN,
+		IntegrationToken:  os.Getenv("YYB_INTEGRATION_TOKEN"),
+		ProtocolToken:     os.Getenv("YYB_PROTOCOL_TOKEN"),
 		AdminUser:         getEnvWithFallback("YYB_ADMIN_USER", "YYB_WEB_USER"),
 		AdminPassword:     getEnvWithFallback("YYB_ADMIN_PASSWORD", "YYB_WEB_PASSWORD"),
 		CookieSecure:      os.Getenv("YYB_COOKIE_SECURE") == "true",
+		EnablePCLogin:     strings.EqualFold(strings.TrimSpace(os.Getenv("YYB_ENABLE_PC_LOGIN")), "true"),
 	}
 
 	app, err := httpapi.NewApp(cfg)

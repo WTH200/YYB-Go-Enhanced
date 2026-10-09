@@ -1,11 +1,17 @@
 package qr
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -33,6 +39,8 @@ const (
 	callbackURL  = "https://yybadaccess.3g.qq.com/pc_yyb/pcyyb_oauth"
 	qrBase       = "https://open.weixin.qq.com/connect/qrcode/"
 	longPollBase = "https://long.open.weixin.qq.com/connect/l/qrconnect"
+	qrPollWait   = 35 * time.Second
+	qrPollLimit  = 40 * time.Second
 )
 
 var (
@@ -158,7 +166,14 @@ func (c *Client) FetchQRCodeImage(ctx context.Context, sess *Session) ([]byte, e
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("QR image HTTP %d", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateQRCodeImage(data); err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 func (c *Client) PollQRCode(ctx context.Context, sess *Session) (PollResult, error) {
@@ -175,15 +190,23 @@ func (c *Client) PollQRCode(ctx context.Context, sess *Session) (PollResult, err
 		"uuid": {sess.WXUUID},
 		"_":    {strconv.FormatInt(time.Now().UnixMilli(), 10)},
 	}.Encode()
-	reqCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, qrPollWait)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, u, nil)
 	if err != nil {
 		return PollResult{}, err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
-	resp, err := sess.HTTPClient.Do(req)
+	pollClient := *sess.HTTPClient
+	if pollClient.Timeout == 0 || pollClient.Timeout < qrPollLimit {
+		pollClient.Timeout = qrPollLimit
+	}
+	resp, err := pollClient.Do(req)
 	if err != nil {
+		if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+			sess.Status = "pending"
+			return PollResult{Status: "pending"}, nil
+		}
 		return PollResult{}, err
 	}
 	defer resp.Body.Close()
@@ -280,7 +303,25 @@ func (c *Client) RefreshLoginBuffer(ctx context.Context, creds protocol.LoginBuf
 }
 
 func DataURIJPEG(data []byte) string {
-	return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data)
+	return DataURIImage(data)
+}
+
+func DataURIImage(data []byte) string {
+	mime := http.DetectContentType(data)
+	if !strings.HasPrefix(mime, "image/") {
+		mime = "image/jpeg"
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
+}
+
+func validateQRCodeImage(data []byte) error {
+	if len(data) == 0 {
+		return fmt.Errorf("微信二维码接口返回空内容，可能被网络或代理拦截")
+	}
+	if _, format, err := image.DecodeConfig(bytes.NewReader(data)); err != nil {
+		return fmt.Errorf("微信二维码接口返回的不是有效图片，可能被网络或代理拦截（%s）", format)
+	}
+	return nil
 }
 
 func parsePoll(text string) (*int, string) {
